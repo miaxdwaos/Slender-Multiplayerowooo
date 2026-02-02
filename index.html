@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Slender 3D - Multijugador Estable</title>
+    <title>Slender 3D - P2P Fixed</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; touch-action: none; }
@@ -28,13 +28,13 @@
 
 <div id="ui">
     <div id="lobby-panel">
-        <div>TU ID: <b id="my-id" style="color:#3498db">...</b></div>
+        <div>TU ID: <b id="my-id" style="color:#3498db">Cargando...</b></div>
         <div id="setup-controls" style="margin-top: 10px;">
             <input type="text" id="peer-id-input" placeholder="ID del Host">
             <button class="btn-join" onclick="connectToHost()">UNIRSE AL JUEGO</button>
         </div>
         <button id="start-btn" class="btn-start" onclick="startGame()">INICIAR PARTIDA</button>
-        <div id="status-msg" style="color: #f1c40f; margin-top: 10px;">Sistema de auto-reinicio activo.</div>
+        <div id="status-msg" style="color: #f1c40f; margin-top: 10px; font-size: 11px;">Esperando jugadores para habilitar inicio...</div>
     </div>
 </div>
 
@@ -73,24 +73,18 @@
     let myId, hostConn, connections = {}, players = {}, slenderman = { x: 8.5, y: 8.5, active: false };
     let gameStarted = false, notesCollected = 0, isDead = false, maxNotes = 0;
     
-    // Configuración Heartbeat
-    let lastHeartbeat = {};
-    const HEARTBEAT_INTERVAL = 1000;
-    const TIMEOUT_THRESHOLD = 4000;
-
     peer.on('open', id => {
         myId = id;
         document.getElementById('my-id').innerText = id;
-        players[id] = { x: 1.5, y: 1.5, color: '#3498db', isDead: false, lastSeen: Date.now() };
-        document.getElementById('start-btn').style.display = 'block'; 
+        players[id] = { x: 1.5, y: 1.5, color: '#3498db', isDead: false };
     });
 
     peer.on('connection', conn => {
         conn.on('open', () => {
             connections[conn.peer] = conn;
             players[conn.peer] = { x: 1.5, y: 1.5, color: '#e67e22', isDead: false };
-            lastHeartbeat[conn.peer] = Date.now();
             addChatMessage("Sistema", "Jugador conectado.");
+            updateLobbyUI();
             syncToAll();
         });
         conn.on('data', handleData);
@@ -98,9 +92,6 @@
     });
 
     function handleData(data) {
-        // Registrar señales de vida
-        if (data.id) lastHeartbeat[data.id] = Date.now();
-
         if (data.type === 'disconnect') {
             removePlayer(data.id);
         } else if (data.type === 'move') {
@@ -116,7 +107,7 @@
             if (!hostConn && worldMap[data.cx][data.cy] === 2) {
                 worldMap[data.cx][data.cy] = 0;
                 notesCollected++;
-                if(notesCollected >= maxNotes) endGame("¡VICTORIA!");
+                if(notesCollected >= maxNotes) endGame("VICTORIA");
                 syncToAll();
             }
         } else if (data.type === 'update') {
@@ -134,7 +125,7 @@
         }
     }
 
-    // El mensaje de "Ya me fui" rápido
+    // AVISO DE DESCONEXIÓN RÁPIDA
     window.addEventListener('beforeunload', () => {
         const msg = { type: 'disconnect', id: myId };
         if (hostConn && hostConn.open) hostConn.send(msg);
@@ -143,38 +134,38 @@
         }
     });
 
-    // Envío constante de latidos
-    setInterval(() => {
-        if (Object.keys(players).length > 1) {
-            broadcast({ type: 'heartbeat', id: myId });
-        }
-    }, HEARTBEAT_INTERVAL);
-
-    // Chequeo de tiempos de espera
-    setInterval(() => {
-        const now = Date.now();
-        for (let id in lastHeartbeat) {
-            if (id !== myId && (now - lastHeartbeat[id] > TIMEOUT_THRESHOLD)) {
-                console.log("Jugador perdido por timeout:", id);
-                removePlayer(id);
-            }
-        }
-    }, 2000);
-
     function removePlayer(peerId) {
         if (players[peerId]) {
             delete players[peerId];
-            delete lastHeartbeat[peerId];
             if (connections[peerId]) {
                 connections[peerId].close();
                 delete connections[peerId];
             }
-            // Si son 2 y uno se sale mientras juegan -> REINICIO AUTOMÁTICO
-            if (gameStarted) {
-                alert("Un jugador se ha ido. La partida no puede continuar.");
-                location.reload(); 
+            
+            // LÓGICA DE REINICIO SOLICITADA
+            // Si después de borrar al jugador solo quedas tú (1 jugador)
+            if (Object.keys(players).length < 2) {
+                alert("Juego Reiniciandose, Todos Los jugadores en multiplayer se salieron");
+                location.reload();
             } else {
+                updateLobbyUI();
                 syncToAll();
+            }
+        }
+    }
+
+    function updateLobbyUI() {
+        const startBtn = document.getElementById('start-btn');
+        const statusMsg = document.getElementById('status-msg');
+        const playerCount = Object.keys(players).length;
+
+        if (!hostConn) { // Solo el host ve el botón
+            if (playerCount >= 2) {
+                startBtn.style.display = 'block';
+                statusMsg.innerText = "Listo para iniciar.";
+            } else {
+                startBtn.style.display = 'none';
+                statusMsg.innerText = "Esperando más jugadores...";
             }
         }
     }
@@ -186,12 +177,16 @@
         hostConn.on('open', () => {
             document.getElementById('setup-controls').classList.add('hidden');
             document.getElementById('start-btn').classList.add('hidden');
+            document.getElementById('status-msg').innerText = "Conectado al Host. Esperando inicio...";
             setInterval(() => {
                 if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
             }, 30);
         });
         hostConn.on('data', handleData);
-        hostConn.on('close', () => { alert("Host desconectado."); location.reload(); });
+        hostConn.on('close', () => { 
+            alert("Juego Reiniciandose, Todos Los jugadores en multiplayer se salieron"); 
+            location.reload(); 
+        });
     }
 
     function startGame() {
@@ -242,16 +237,19 @@
     });
 
     let keys = {};
-    window.onkeydown = e => keys[e.code] = true;
+    window.onkeydown = e => { if(!chatInput.matches(':focus')) keys[e.code] = true; };
     window.onkeyup = e => keys[e.code] = false;
 
     function handleMovement() {
         if(!gameStarted || isDead) return;
         let step = moveSpeed;
-        let targetX = posX + dirX * step * (keys['KeyW'] ? 1 : (keys['KeyS'] ? -1 : 0));
-        let targetY = posY + dirY * step * (keys['KeyW'] ? 1 : (keys['KeyS'] ? -1 : 0));
+        let moveX = (keys['KeyW'] ? 1 : (keys['KeyS'] ? -1 : 0));
+        let targetX = posX + dirX * step * moveX;
+        let targetY = posY + dirY * step * moveX;
+        
         if(worldMap[Math.floor(targetX)][Math.floor(posY)] !== 1) posX = targetX;
         if(worldMap[Math.floor(posX)][Math.floor(targetY)] !== 1) posY = targetY;
+        
         players[myId].x = posX; players[myId].y = posY;
 
         let mx = Math.floor(posX), my = Math.floor(posY);
@@ -260,6 +258,7 @@
             if (hostConn) hostConn.send(msg); else handleData(msg);
         }
 
+        // Slenderman IA (Solo Host)
         if(!hostConn && slenderman.active) {
             let closest = null, minDist = 999;
             for(let id in players) {
@@ -286,8 +285,10 @@
         canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const w = canvas.width, h = canvas.height;
         ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
-        if(!gameStarted && notesCollected === 0) {
-            ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.fillText("ESPERANDO JUGADORES...", w/2, h/2);
+        
+        if(!gameStarted) {
+            ctx.fillStyle = "white"; ctx.textAlign = "center"; 
+            ctx.fillText("MODO MULTIJUGADOR - ESPERANDO INICIO", w/2, h/2);
             requestAnimationFrame(render); return;
         }
 
@@ -298,13 +299,16 @@
             let mapX = Math.floor(posX), mapY = Math.floor(posY);
             let deltaX = Math.abs(1 / rayDirX), deltaY = Math.abs(1 / rayDirY);
             let stepX, stepY, sideDistX, sideDistY, hit = 0, side;
+            
             if(rayDirX < 0) { stepX = -1; sideDistX = (posX - mapX) * deltaX; } else { stepX = 1; sideDistX = (mapX + 1.0 - posX) * deltaX; }
             if(rayDirY < 0) { stepY = -1; sideDistY = (posY - mapY) * deltaY; } else { stepY = 1; sideDistY = (mapY + 1.0 - posY) * deltaY; }
+            
             while(hit === 0) {
                 if(sideDistX < sideDistY) { sideDistX += deltaX; mapX += stepX; side = 0; }
                 else { sideDistY += deltaY; mapY += stepY; side = 1; }
-                if(worldMap[mapX][mapY] > 0) hit = worldMap[mapX][mapY];
+                if(worldMap[mapX] && worldMap[mapX][mapY] > 0) hit = worldMap[mapX][mapY];
             }
+            
             let perpDist = (side === 0) ? (sideDistX - deltaX) : (sideDistY - deltaY);
             zBuffer[x] = perpDist;
             let lineHeight = Math.floor(h / perpDist);
